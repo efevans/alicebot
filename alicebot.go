@@ -1,9 +1,9 @@
 package main
 
 import (
-    "encoding/json"
+	"encoding/json"
 	"log"
-    "os"
+	"os"
 	"fmt"
 	"github.com/nlopes/slack"
 	"strings"
