@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -11,6 +10,14 @@ import (
 	"github.com/nlopes/slack"
 )
 
+type game struct {
+	questions       []Question
+	questionRunning bool
+	players         map[string]int
+	msgCh           chan string
+	api             *slack.Client
+}
+
 // Question contains the information for a question
 type Question struct {
 	ID         int
@@ -19,6 +26,8 @@ type Question struct {
 	Answer     string
 	isAnswered bool
 }
+
+var currentGame *game
 
 // InitTrivia readies the trivia game for playing
 func InitTrivia(api *slack.Client, ch chan string) {
@@ -31,54 +40,77 @@ func InitTrivia(api *slack.Client, ch chan string) {
 }
 
 func handleMessage(api *slack.Client, msg string) {
+	if currentGame == nil { // handle message when game is not running
+		handleMessageWhenGameIsNotRunning(api, msg)
+	} else { // handle message when game is running
+		handleMessageWhenGameIsRunning(api, msg)
+	}
+}
+
+func handleMessageWhenGameIsNotRunning(api *slack.Client, msg string) {
 	switch msg {
 	case "start":
-		PostMessage(api, "Starting Jeopardy")
-		playTrivia(api, []string{"Eric", "Andrew"})
+		startTrivia(api)
 	}
 }
 
-// layTrivia begins a game of jeopardy
-func playTrivia(api *slack.Client, players []string) {
-	if len(players) == 0 {
-		// fmt.Println("No players entered.")
-		PostMessage(api, "No players entered.")
-		return
+func handleMessageWhenGameIsRunning(api *slack.Client, msg string) {
+	if currentGame.questionRunning {
+		currentGame.msgCh <- msg
 	}
+}
 
+func startTrivia(api *slack.Client) {
+	msgCh := make(chan string, 10)
+	currentGame = &game{questions: getQuestions(), msgCh: msgCh, players: make(map[string]int), api: api}
+	go currentGame.start()
+}
+
+func (game *game) start() {
 	// Introduce the game
-	// fmt.Println("Welcome to Jeopardy. I'll be your host, Alice Trebek.")
-	PostMessage(api, "Welcome to Jeopardy. I'll be your host, Alice Trebek.")
-	time.Sleep(2000 * time.Millisecond)
-	introducePlayers(api, players)
-}
+	PostMessage(game.api, "Starting Jeopardy")
+	// https://stackoverflow.com/questions/37891280/goroutine-time-sleep-or-time-after
 
-func introducePlayers(api *slack.Client, players []string) {
-	firstName := true
-	var introduction bytes.Buffer
-	introduction.WriteString("Our contestants today are: ")
-	// fmt.Print("Our contestants today are: ")
+	// iterate over each game
+	for _, currQuestion := range game.questions {
+		PostMessage(game.api, "Next question in 3, 2, 1...")
+		time.Sleep(time.Second * 3)
+		currQuestion.read(game.api)
+		game.questionRunning = true
 
-	for _, player := range players {
-		if !firstName {
-			// fmt.Print(", ")
-			introduction.WriteString(", ")
+		// accept guesses in the allowed amount of time
+	GuessTime:
+		for {
+			select {
+			case guess := <-game.msgCh:
+				// PostMessage(game.api, guess)
+				if currQuestion.guess(game.api, guess) {
+					PostMessage(game.api, "Correct")
+					// add points to player
+					break GuessTime
+				} else {
+					PostMessage(game.api, "Incorrect")
+					// deduct points from player
+					// exclude them from answering this question anymore
+				}
+			case <-time.After(time.Second * 10):
+				PostMessage(game.api, "none of you got it right lmfoa")
+				break GuessTime
+			}
 		}
-		// fmt.Print(player)
-		introduction.WriteString(player)
-		firstName = false
-	}
 
-	PostMessage(api, introduction.String())
+		game.questionRunning = false
+		time.Sleep(time.Second * 2)
+	}
 }
 
 // Read prints out the question, and readies the Question for answering
-func (question *Question) read() {
-	fmt.Println(question.Question)
+func (question *Question) read(api *slack.Client) {
+	PostMessage(api, question.Question)
 }
 
 // Guess checks if a propsed answer is correct
-func (question *Question) guess(answer string) {
+func (question *Question) guess(api *slack.Client, answer string) bool {
 	if !question.isAnswered {
 		fmt.Println("Propsing answer with value: " + answer)
 		correct := answer == question.Answer // might need to do some trimming of non-alphanumerics and lowercasing the guess and answer to avoid questions with odd answers
@@ -86,14 +118,18 @@ func (question *Question) guess(answer string) {
 		if correct {
 			fmt.Println("Correct!")
 			question.isAnswered = true
-		} else {
-			fmt.Println("Incorrect. Answer was: " + question.Answer)
+			return true
 		}
+
+		fmt.Println("Incorrect. Answer was: " + question.Answer)
+		return false
 	}
+
+	return false
 }
 
-func getQuestion() *Question {
-	resp, err := http.Get("http://jservice.io/api/random?count=1")
+func getQuestions() []Question {
+	resp, err := http.Get("http://jservice.io/api/random?count=10")
 	var questions = &[]Question{}
 
 	if err == nil {
@@ -111,6 +147,5 @@ func getQuestion() *Question {
 		fmt.Println("woops lel")
 	}
 
-	(*questions)[0].isAnswered = false
-	return &(*questions)[0]
+	return *questions
 }

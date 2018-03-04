@@ -33,7 +33,7 @@ func main() {
 	rtm := api.NewRTM()
 	go rtm.ManageConnection()
 
-	triviaCh := make(chan string)
+	triviaCh := make(chan string, 10)
 	go InitTrivia(api, triviaCh)
 
 Loop:
